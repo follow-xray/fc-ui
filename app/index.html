@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>fc-ui · 服务端管理</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<body><main><header><h1>fc-ui <small>服务端管理</small></h1><button id="logout" hidden>锁定面板</button></header>
+<p id="notice" role="status" aria-live="polite"></p>
+<section id="login"><h2>解锁面板</h2><form id="auth"><label>管理口令<input id="token" type="password" required autocomplete="off"></label><p>在 VPS 上运行 <code>sudo fc-ui panel</code> 可查看口令和 SSH 转发命令。</p><button>解锁</button></form></section>
+<div id="workspace" hidden><section><h2>创建代理节点</h2><form id="create">
+<label>配置模板<select name="template" id="template"></select></label>
+<div class="grid"><label>节点名称<input name="name" maxlength="100" placeholder="例如：东京 VPS"></label><label>客户端连接地址<input name="host" required placeholder="公网 IP 或域名"></label>
+<label>代理端口<input name="port" type="number" required min="1024" max="65535"></label></div>
+<div id="vless"><div class="grid"><label>TLS 服务器名称 / SNI<input name="sni"></label><label id="uuid-row">UUID<input name="uuid" placeholder="留空自动生成"></label></div>
+<label id="short">REALITY shortId<input name="shortId" placeholder="留空自动生成；2–16 位偶数长度十六进制"></label>
+<div id="cert"><label>PEM 证书链<textarea name="certificate" rows="3"></textarea></label><label>PEM 私钥<textarea name="key" rows="3"></textarea></label></div></div>
+<label id="ss">密码<input name="password" type="password" autocomplete="new-password" placeholder="留空生成与算法匹配的密码"></label>
+<label id="path-row">传输路径<input name="path" value="/fc-ui"></label>
+<label id="grpc-row">gRPC 服务名<input name="serviceName" value="fcui"></label>
+<label id="mode-row">XHTTP 模式<select name="mode"><option>auto</option><option>packet-up</option><option>stream-up</option><option>stream-one</option></select></label>
+<label id="drive-row">xdrive 存储参数 JSON<textarea name="xdrive" rows="4" placeholder='{"service":"local","remoteFolder":"shared"}'></textarea></label>
+<p id="hint"></p><button>创建并启动</button></form></section>
+<section><div class="row"><h2>已部署节点</h2><button id="refresh" class="secondary">刷新</button></div><div id="nodes"></div></section></div>
+</main></body></html>

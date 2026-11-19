@@ -1,0 +1,78 @@
+name: Release fc-ui
+on:
+  push:
+    tags: ['**']
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    if: github.event.deleted == false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test templates with pinned Xray
+        run: |
+          mkdir -p "$RUNNER_TEMP/core"
+          python3 app/fetch_core.py "$RUNNER_TEMP/core"
+          XRAY_TEST_BIN="$RUNNER_TEMP/core/xray" python3 -m unittest discover -s tests -v
+      - name: Build installer
+        run: |
+          sh -n install.sh
+          node --check app/app.js
+          python3 tools/package.py
+          sha256sum fcui.run > fcui.run.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fc-ui-installer
+          path: |
+            fcui.run
+            fcui.run.sha256
+          if-no-files-found: error
+          overwrite: true
+
+  publish:
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: fc-ui-release-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: fc-ui-installer
+      - name: Publish tag assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          sha256sum --check fcui.run.sha256
+          if ! meta=$(gh release view --json isDraft,assets -- "$TAG"); then
+            options=(--draft --verify-tag --generate-notes --title "fc-ui $TAG")
+            if [[ $TAG =~ ^v?[0-9]+\.[0-9]+\.[0-9]+- ]]; then options+=(--prerelease); fi
+            gh release create "${options[@]}" -- "$TAG"
+            meta='{"isDraft":true,"assets":[]}'
+          fi
+          if [[ $(jq -r '.isDraft' <<<"$meta") == true ]]; then
+            gh release upload --clobber -- "$TAG" fcui.run fcui.run.sha256
+            options=(--draft=false --latest)
+            if [[ $TAG =~ ^v?[0-9]+\.[0-9]+\.[0-9]+- ]]; then options=(--draft=false --prerelease --latest=false); fi
+            gh release edit "${options[@]}" -- "$TAG"
+          else
+            for asset in fcui.run fcui.run.sha256; do
+              digest="sha256:$(sha256sum "$asset" | cut -d' ' -f1)"
+              existing=$(jq -r --arg n "$asset" '.assets[] | select(.name==$n and .state=="uploaded") | .digest // "unknown"' <<<"$meta")
+              if [[ -z $existing ]]; then
+                gh release upload --clobber -- "$TAG" "$asset"
+              elif [[ $existing != "$digest" ]]; then
+                echo "::error::Published $asset differs; use a new tag for a new installer"
+                exit 1
+              fi
+            done
+          fi

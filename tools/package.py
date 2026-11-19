@@ -23,7 +23,7 @@ def package():
     data = io.BytesIO()
     with tarfile.open(fileobj=data, mode="w", format=tarfile.USTAR_FORMAT) as tar:
         for name in ["install.sh", "LICENSE", "app/cli.py", "app/manager.py", "app/panel.py",
-                     "app/profiles.py", "app/catalog.py", "app/fetch_core.py", "app/core.json",
+                     "app/certificates.py", "app/cert_service.py", "app/profiles.py", "app/catalog.py", "app/fetch_core.py", "app/core.json",
                      "app/index.html", "app/app.js", "app/style.css"]:
             content = (ROOT/name).read_bytes()
             info = tarfile.TarInfo(name)

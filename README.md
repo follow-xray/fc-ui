@@ -32,7 +32,7 @@
 
 ## 选择 2：直接创建代理
 
-填写对外地址并输入编号即可创建节点。CLI 和面板读取同一份目录，原有 1–4 号模板保持原编号。TLS 入站另需提供证书及私钥；xdrive 需要配置存储。面板可编辑路径、gRPC 服务名、XHTTP 模式、认证参数和用户凭据。
+填写对外地址并输入编号即可创建节点。CLI 和面板读取同一份目录，原有 1–4 号模板保持原编号。TLS 入站先按域名查找证书，可复用、导入或签发；xdrive 需要配置存储。面板可编辑路径、gRPC 服务名、XHTTP 模式、认证参数和用户凭据。
 
 | 协议 / 传输 | 可选的传输安全 | 补充参数 |
 | --- | --- | --- |
@@ -40,6 +40,7 @@
 | VLESS · WebSocket、HTTPUpgrade、mKCP | none、TLS | WS/HTTPUpgrade 可设路径；mKCP 监听 UDP |
 | VLESS · Hysteria 2 传输 | TLS | 自动生成独立的传输认证，同时保留 VLESS 用户 ID，使用 UDP |
 | VLESS · xdrive | none、TLS（上游存储连接） | 自动生成 VLESS Encryption 密钥对，fcxray 导入时启用 Mux；TLS 可选 H3，配置 local、google-drive、s3 或 template（远端服务须支持所选 HTTP 版本） |
+| 原生 Hysteria 2 | TLS | UDP 入站，生成带域名 SNI 和随机密码的 `hy2://` 链接 |
 | Trojan · TCP | TLS | 密码自动生成，可在面板自定义。证书须与 SNI 相符 |
 | Shadowsocks AEAD | AES-128-GCM、AES-256-GCM、ChaCha20-IETF-Poly1305、XChaCha20-IETF-Poly1305 | TCP + UDP，共用服务端口 |
 | Shadowsocks 2022 | BLAKE3 AES-128-GCM、AES-256-GCM、ChaCha20-Poly1305 | 密钥按算法生成，分别为 16、32、32 字节的 Base64 编码 |
@@ -49,6 +50,28 @@
 xdrive 的存储参数是一个 JSON 对象，必须包含 `service` 和 `remoteFolder`。例如 `{"service":"local","remoteFolder":"shared"}` 会使用状态目录下的 `xdrive/shared`，需要两端能访问同一存储。Google Drive、S3 和 HTTP 模板还需填入该服务对应的 `secrets`、`s3` 或 `template` 参数。此类分享链接包含存储凭据，仅交给授权使用者。服务“已启动”表示进程已启动，云存储实际转发需用自己的账户验证。
 
 创建时先由 Xray 校验配置，再按 TCP、UDP 或存储传输检查启动状态。失败不会保存该节点或返回成功链接。已有节点会保留，数字菜单会跳过本项目已经分配的端口。代理进程使用非 root 账户，支持 1024–65535 端口。默认 IPv4 入站；填写公网 IPv6 字面地址时使用 IPv6 入站。域名默认使用 IPv4，请确保其 A 记录与 VPS 对应。
+
+## TLS 入站证书
+
+CLI 和回环面板共用 VPS 的证书库 `/etc/fc-ui/certs/`。创建 TLS 节点时填写客户端验证的域名（SNI）。连接地址可以单独填公网 IP。系统按证书 SAN 查找精确或单层通配符匹配，检查有效期、系统信任链和私钥配对；同一域名的 Trojan、原生 HY2 和 VLESS TLS 节点可以共用同一张证书。
+
+没有可用证书时，可选择以下来源：
+
+| 来源 | 需要提供的信息 | 后续更新 |
+| --- | --- | --- |
+| VPS 已有证书 | 选择从 Certbot、按域名部署的 x-ui 目录中发现的匹配项，或输入完整证书链和未加密私钥的绝对路径 | 原签发工具续期，fc-ui 每小时检查源文件并同步 |
+| 粘贴 PEM（面板） | 完整证书链及对应私钥 | 在证书库中选择“更新 PEM” |
+| ACME HTTP-01 | 域名的 A/AAAA 记录指向可达入口，允许公网 TCP 80；可填联系邮箱 | fc-ui 自动续期 |
+| ACME HTTP-01 已有网站 | 网站根目录；请让 `fcui-acme` 可写其中的 `.well-known/acme-challenge/`，并确保公网 80 能访问该目录 | 沿用网站目录 |
+| ACME DNS-01 | 首版支持 Cloudflare。输入限定目标区域的 DNS 编辑 Token，按需填 Zone ID 或用于限定账户的 Account ID，可签发 `*.example.com`。自动查找区域时 Token 还需有区域读取权限 | 沿用保存在专用 ACME 账户目录中的凭据 |
+
+使用内部 CA 时，客户端也需要信任对应根证书。
+
+ACME 默认使用 Let's Encrypt。独立的 `fc-ui-cert` 服务部署证书，首次需要签发时获取固定提交、经过 SHA-256 校验的 acme.sh 及 DNS 插件。签发进程使用 `fcui-acme` 账号；节点和面板继续使用 `fcxrayd`。临时 HTTP 验证只在挑战期间监听 80；已有网站占用端口时可选网站目录或 DNS。管理页面仍通过 SSH 转发访问。
+
+证书校验通过后，完整证书链与私钥作为一对原子切换。节点只引用文件路径。当前固定的 Xray 内核默认每小时重新读取证书，可在节点停止、启动后立即加载。源证书或续期校验失败时继续使用上一份已部署证书，面板的证书库显示最近检查结果和引用节点。已有内嵌 PEM 的节点可在节点卡片选择“登记旧证书”，下次启动采用文件引用；若原证书不符合当前校验条件，可先导入该域名的有效证书再迁移。
+
+备份证书和自动续期状态时，妥善保管 `/etc/fc-ui/certs/` 和 `/var/lib/fc-ui-cert/`（含 ACME 账户密钥与 DNS 凭据）。代理节点状态单独保存在 `/var/lib/fc-ui/`。
 
 ## 支持环境与管理
 

@@ -84,6 +84,8 @@ def transport(t, options, stream, query, state):
         service = options.get("serviceName") or "fcui"
         stream["grpcSettings"] = {"serviceName": service}
         query["serviceName"] = service
+    elif network == "hysteria" and t.protocol == "hysteria":
+        stream["hysteriaSettings"] = {"version": 2}
     elif network == "hysteria":
         settings = {
             "version": 2,
@@ -113,7 +115,7 @@ def transport(t, options, stream, query, state):
         query["xdriveSettings"] = json.dumps(drive, separators=(",", ":"))
 
 
-def build(options, xray, state=Path("/var/lib/fc-ui")):
+def build(options, xray, state=Path("/var/lib/fc-ui"), cert_files=None):
     t = TEMPLATES.get(options.get("template"))
     if not t:
         raise ValueError("未知模板")
@@ -192,7 +194,10 @@ def build(options, xray, state=Path("/var/lib/fc-ui")):
             query["encryption"] = encrypt
         else:
             user = options.get("password") or secrets.token_urlsafe(24)
-            inbound["settings"] = {"clients": [{"password": user}]}
+            if t.protocol == "hysteria":
+                inbound["settings"] = {"version": 2, "users": [{"auth": user}]}
+            else:
+                inbound["settings"] = {"clients": [{"password": user}]}
         if t.security != "none":
             sni = hostname(
                 options.get("sni")
@@ -203,28 +208,22 @@ def build(options, xray, state=Path("/var/lib/fc-ui")):
             if t.security == "reality":
                 reality(options, xray, stream, query, sni)
             elif t.needs_cert:
-                cert, key = options.get("certificate", ""), options.get("key", "")
-                if (
-                    "-----BEGIN CERTIFICATE-----" not in cert
-                    or "PRIVATE KEY-----" not in key
-                ):
-                    raise ValueError("请提供与 SNI 匹配的完整 PEM 证书链和私钥")
-                stream["tlsSettings"] = {
-                    "certificates": [
-                        {
-                            "certificate": cert.strip().splitlines(),
-                            "key": key.strip().splitlines(),
-                        }
-                    ]
-                }
+                if not cert_files:
+                    raise ValueError("请先查找、导入或签发 TLS 证书")
+                cert, key = cert_files
+                stream["tlsSettings"] = {"certificates": [
+                    {"certificateFile": str(cert), "keyFile": str(key)}
+                ]}
             if t.h3 or t.network in ("hysteria", "grpc") and t.security == "tls":
                 alpn = "h2" if t.network == "grpc" else "h3"
                 stream.setdefault("tlsSettings", {})["alpn"] = [alpn]
                 query["alpn"] = alpn
         transport(t, options, stream, query, state)
+        if t.protocol == "hysteria":
+            query = {"sni": sni}
         inbound["streamSettings"] = stream
         uri = "%s://%s@%s?%s" % (
-            t.protocol,
+            "hy2" if t.protocol == "hysteria" else t.protocol,
             quote(user, safe=""),
             authority,
             urlencode(query),

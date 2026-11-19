@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 
+import certificates
 from profiles import build
 from catalog import TEMPLATES
 
@@ -37,6 +38,7 @@ def atomic(path, data):
 class Manager:
     def __init__(self, state=STATE, xray=XRAY):
         self.state, self.xray = state, xray
+        self.cert_store = certificates.STORE
         self.db = state / "nodes.json"
         self.nodes = json.loads(self.db.read_text()) if self.db.exists() else {}
         self.children, self.retry = {}, {}
@@ -133,6 +135,26 @@ class Manager:
             raise
 
     def call(self, op, data, local=False):
+        if op == "certFind":
+            return certificates.inventory(certificates.domain_name(data.get("domain")), self.cert_store)
+        if op in ("certRegister", "certCandidates", "certReplace"):
+            return certificates.service(op, data)
+        if op == "certList":
+            entries = certificates.inventory(root=self.cert_store)
+            with self.lock:
+                for entry in entries:
+                    entry["nodes"] = [n["name"] for n in self.nodes.values() if n.get("certId") == entry["id"]]
+            return entries
+        cert_files = None
+        template = TEMPLATES.get(data.get("template")) if op == "create" else None
+        if template and template.needs_cert:
+            domain = certificates.domain_name(data.get("sni") or data.get("host"))
+            cert_id = data.get("certId")
+            if not cert_id and data.get("certificate") and data.get("key"):
+                # Older API clients can still upload PEM through the registry.
+                cert_id = certificates.service("certRegister", dict(data, domain=domain, source="pem"))["id"]
+            cert_files = certificates.pair(cert_id, self.cert_store)
+            certificates.verify_pair(*cert_files, domain)
         with self.lock:
             if op == "list":
                 return [dict(n, id=i, running=i in self.children and self.children[i].poll() is None) for i,n in self.nodes.items()]
@@ -140,7 +162,9 @@ class Manager:
                 self.enable_panel(int(data.get("port") or 8787))
                 return {"port": self.panel.server_port, "token": json.loads(self.token.read_text())}
             if op == "create":
-                cfg, node = build(data, self.xray, self.state)
+                cfg, node = build(data, self.xray, self.state, cert_files)
+                if cert_files:
+                    node["certId"] = cert_id
                 if any(n["port"] == node["port"] for n in self.nodes.values()) or (self.panel and self.panel.server_port == node["port"]):
                     raise ValueError("该端口已分配，请选择其他端口")
                 node_id = secrets.token_hex(8)
@@ -157,9 +181,32 @@ class Manager:
                     raise
                 return dict(node, id=node_id)
             node_id = data.get("id")
-            if op not in ("start", "stop") or node_id not in self.nodes:
+            if op not in ("start", "stop", "certMigrate") or node_id not in self.nodes:
                 raise ValueError("未知操作或节点")
             n = self.nodes[node_id]
+            if op == "certMigrate":
+                if n.get("certId") or not TEMPLATES[n["template"]].needs_cert:
+                    raise ValueError("节点无需迁移")
+                from urllib.parse import parse_qs, urlsplit
+                domain = parse_qs(urlsplit(n["link"]).query).get("sni", [n["host"]])[0]
+                path = self.state / (node_id + ".json")
+                config = json.loads(path.read_text())
+                items = config["inbounds"][0]["streamSettings"]["tlsSettings"]["certificates"]
+                if "certificateFile" in items[0]:
+                    # Recover if the process stopped after saving config but before saving the index.
+                    cert_id = Path(items[0]["certificateFile"]).parents[1].name
+                else:
+                    item = certificates.service("certRegister", {
+                        "domain": domain, "source": "pem", "certificate": "\n".join(items[0]["certificate"]),
+                        "key": "\n".join(items[0]["key"])})
+                    cert_id = item["id"]
+                cert, key = certificates.pair(cert_id, self.cert_store)
+                certificates.verify_pair(cert, key, domain)
+                items[0] = {"certificateFile": str(cert), "keyFile": str(key)}
+                atomic(path, config)
+                atomic(self.db, dict(self.nodes, **{node_id: dict(n, certId=cert_id)}))
+                n["certId"] = cert_id
+                return {"id": cert_id}
             previous = n["enabled"]
             if op == "start" and not (node_id in self.children and self.children[node_id].poll() is None):
                 self.launch(node_id)
@@ -210,7 +257,9 @@ def daemon():
     manager = Manager()
     path = STATE / "control.sock"
     with contextlib.suppress(FileNotFoundError): path.unlink()
-    with socketserver.UnixStreamServer(str(path), Handler) as srv:
+    class ControlServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+        daemon_threads = True
+    with ControlServer(str(path), Handler) as srv:
         srv.timeout = .5
         done = threading.Event()
         for sig in (signal.SIGINT,signal.SIGTERM):

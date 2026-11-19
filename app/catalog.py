@@ -149,3 +149,5 @@ for key, entry in list(TEMPLATES.items()):
             name=entry.name + " · 内网明文",
             port=8500 + len(TEMPLATES),
         )
+
+TEMPLATES["hy2"] = Template("Hysteria 2 · 原生 HY2 · TLS", 8446, "hysteria", "hysteria", "tls")

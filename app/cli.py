@@ -18,7 +18,7 @@ HOST_FILE = Path("/etc/fc-ui/public-host")
 
 def call(op, data=None):
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-        sock.settimeout(25)
+        sock.settimeout(660 if op == "certRegister" else 25)
         sock.connect(str(STATE / "control.sock"))
         sock.sendall(json.dumps({"op": op, "data": data or {}}).encode()+b"\n")
         response = json.load(sock.makefile("r"))
@@ -56,6 +56,60 @@ def ssh_command(host, user, ssh_port, panel_port):
         "-o", "ExitOnForwardFailure=yes", "-p", int(ssh_port), user+"@"+host])
 
 
+def choose_certificate(host):
+    try:
+        ipaddress.ip_address(host)
+        default = ""
+    except ValueError:
+        default = host
+    domain = prompt("客户端校验的证书域名 / SNI", default)
+    matches = call("certFind", {"domain": domain})
+    valid = []
+    for item in matches:
+        if item["problem"]:
+            print("已有证书不可用：" + item["problem"])
+        else:
+            valid.append(item)
+            print("%d) %s · %s · %s" % (len(valid), ", ".join(item["names"]), item["source"], item["expires"]))
+    if len(valid) == 1:
+        print("已复用匹配的证书。")
+        return domain, valid[0]["id"]
+    if valid:
+        index = int(prompt("复用证书编号", "1"))
+        if not 1 <= index <= len(valid):
+            raise ValueError("证书编号无效")
+        return domain, valid[index-1]["id"]
+    existing = call("certCandidates", {"domain": domain})
+    for i, item in enumerate(existing, 1):
+        print("%d) 导入 %s · %s" % (i, item["chainPath"], item["expires"]))
+    manual = len(existing) + 1
+    print("%d) 输入已有证书路径\n%d) ACME 签发" % (manual, manual+1))
+    choice = int(prompt("证书来源", "1" if existing else str(manual+1)))
+    data = {"domain": domain}
+    if 1 <= choice <= len(existing):
+        data.update(existing[choice-1], source="path")
+    elif choice == manual:
+        data.update(source="path", chainPath=prompt("VPS 上完整证书链的绝对路径"),
+                    keyPath=prompt("VPS 上私钥的绝对路径"))
+    elif choice == manual+1:
+        method = {"1":"http", "2":"webroot", "3":"dns"}.get(prompt(
+            "验证方式：1) 临时监听 TCP 80  2) 已有网站目录  3) DNS-01", "1"))
+        if not method:
+            raise ValueError("未知验证方式")
+        data.update(source="acme", method=method, email=prompt("ACME 联系邮箱（可留空）"))
+        if method == "webroot":
+            data["webroot"] = prompt("网站根目录（挑战目录须允许 fcui-acme 写入）")
+        if method == "dns":
+            data.update(identifier=prompt("签发域名（支持通配符）", domain), provider="cloudflare",
+                        token=getpass.getpass("Cloudflare DNS API Token："), zone=prompt("Zone ID（可留空）"))
+            if not data["zone"]:
+                data["account"] = prompt("Account ID（跨账户同名区域时填写，可留空）")
+    else:
+        raise ValueError("证书来源无效")
+    print("正在验证并部署证书，请稍候……", flush=True)
+    return domain, call("certRegister", data)["id"]
+
+
 def menu(mode):
     ssh = os.environ.get("SSH_CONNECTION", "").split()
     host = hostname(prompt("客户端可达的 VPS IP 或域名（NAT 主机请填对外地址）", guess_host(ssh)), allow_loopback=mode == "node")
@@ -91,9 +145,7 @@ def menu(mode):
     if template.network == "xdrive":
         options["xdrive"] = Path(prompt("存储参数 JSON 文件路径（含 service 和 remoteFolder）")).read_text()
     if template.needs_cert:
-        options.update(sni=prompt("证书对应的服务器域名", host),
-                       certificate=Path(prompt("PEM 证书链路径")).read_text(),
-                       key=Path(prompt("PEM 私钥路径")).read_text())
+        options["sni"], options["certId"] = choose_certificate(host)
     result = call("create", options)
     print("\n节点已启动：%s · %s\n在 fcxray 的“我的节点 → 导入节点”粘贴：\n\n%s" % (result["name"], result["id"], result["link"]))
     if template.ports:

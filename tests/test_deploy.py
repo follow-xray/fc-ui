@@ -66,15 +66,23 @@ class CoreTest(unittest.TestCase):
         for key in list(self.manager.children): self.manager.stop(key)
 
     def test_templates_and_links(self):
-        # A self-signed certificate is used only to test server configuration.
-        key,cert=self.state/"key.pem",self.state/"cert.pem"
+        cert_id = "0"*32
+        self.manager.cert_store = self.state / "certs"
+        files = self.manager.cert_store / cert_id / "current"
+        files.mkdir(parents=True)
+        key, cert = files / "privkey.pem", files / "fullchain.pem"
         subprocess.run(["openssl","req","-new","-x509","-newkey","rsa:2048","-nodes","-days","1","-subj","/CN=vps.example",
-                        "-keyout",str(key),"-out",str(cert)],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+                        "-addext","subjectAltName=DNS:vps.example","-keyout",str(key),"-out",str(cert)],check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        from unittest.mock import patch
+        trust = patch.dict(os.environ, SSL_CERT_FILE=str(cert))
+        trust.start()
+        self.addCleanup(trust.stop)
         links=[]
         for kind in TEMPLATES:
             host = "127.0.0.1" if TEMPLATES[kind].private_only else "vps.example"
             node=self.manager.call("create",{"template":kind,"host":host,"port":free_port(),"name":"测试 "+kind,
-                                             "certificate":cert.read_text(),"key":key.read_text(),
+                                             "certId":cert_id,
                                              "xdrive":{"service":"local","remoteFolder":"qa"}})
             profile=json.loads((self.state/(node["id"]+".json")).read_text())["inbounds"][0]
             self.assertEqual(node["port"],profile["port"])
@@ -89,6 +97,10 @@ class CoreTest(unittest.TestCase):
                 auth = link.username
                 decoded = base64.urlsafe_b64decode(auth + "=" * (-len(auth) % 4)).decode()
                 self.assertEqual(decoded, template.cipher + ":" + profile["settings"]["password"])
+            elif template.protocol == "hysteria":
+                self.assertEqual(link.scheme, "hy2")
+                self.assertEqual(unquote(link.username), profile["settings"]["users"][0]["auth"])
+                self.assertEqual(parse_qs(link.query)["sni"], ["vps.example"])
             else:
                 params = parse_qs(link.query)
                 self.assertEqual(params["type"], [template.network])

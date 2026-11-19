@@ -9,12 +9,26 @@
 <label>代理端口<input name="port" type="number" required min="1024" max="65535"></label></div>
 <div id="vless"><div class="grid"><label>TLS 服务器名称 / SNI<input name="sni"></label><label id="uuid-row">UUID<input name="uuid" placeholder="留空自动生成"></label></div>
 <label id="short">REALITY shortId<input name="shortId" placeholder="留空自动生成；2–16 位偶数长度十六进制"></label>
-<div id="cert"><label>PEM 证书链<textarea name="certificate" rows="3"></textarea></label><label>PEM 私钥<textarea name="key" rows="3"></textarea></label></div></div>
+<fieldset id="cert"><legend>节点证书</legend>
+<button type="button" id="find-cert" class="secondary">查找匹配证书</button>
+<p id="cert-status" role="status"></p><div id="cert-options" hidden>
+<label>证书来源<select id="cert-choice"></select></label>
+<div id="cert-path" hidden><label>服务器证书链路径<input id="chain-path" placeholder="/etc/letsencrypt/live/example.com/fullchain.pem"></label>
+<label>服务器私钥路径<input id="key-path" placeholder="/etc/letsencrypt/live/example.com/privkey.pem"></label></div>
+<div id="cert-pem" hidden><label>PEM 完整证书链<textarea id="pem-chain"></textarea></label><label>PEM 私钥<textarea id="pem-key" autocomplete="off"></textarea></label></div>
+<div id="cert-acme" hidden><label>验证方式<select id="challenge"><option value="http">HTTP-01 · 临时监听公网 TCP 80</option><option value="webroot">HTTP-01 · 使用已有网站</option><option value="dns">DNS-01 · DNS 服务商 API</option></select></label>
+<label>ACME 联系邮箱（可选）<input id="acme-email"></label>
+<label id="webroot-row" hidden>网站根目录<input id="webroot" placeholder="fcui-acme 需可写 .well-known/acme-challenge"></label>
+<div id="dns-fields" hidden><label>DNS 服务商<select id="dns-provider"><option value="cloudflare">Cloudflare</option></select></label>
+<label>签发域名（可使用通配符）<input id="identifier"></label>
+<label>区域 DNS API Token<input type="password" id="dns-token" autocomplete="off"></label>
+<label>Zone ID（可选）<input id="dns-zone"></label><label id="account-row">Account ID（跨账户查找时可选）<input id="dns-account"></label></div></div></div></fieldset></div>
 <label id="ss">密码<input name="password" type="password" autocomplete="new-password" placeholder="留空生成与算法匹配的密码"></label>
 <label id="path-row">传输路径<input name="path" value="/fc-ui"></label>
 <label id="grpc-row">gRPC 服务名<input name="serviceName" value="fcui"></label>
 <label id="mode-row">XHTTP 模式<select name="mode"><option>auto</option><option>packet-up</option><option>stream-up</option><option>stream-one</option></select></label>
 <label id="drive-row">xdrive 存储参数 JSON<textarea name="xdrive" rows="4" placeholder='{"service":"local","remoteFolder":"shared"}'></textarea></label>
-<p id="hint"></p><button>创建并启动</button></form></section>
+<p id="hint"></p><button id="submit-node">创建并启动</button></form></section>
+<section><h2>证书库</h2><div id="cert-list"></div><form id="replace-pem" hidden><strong id="replace-domain"></strong><label>新证书链<textarea name="chain" required></textarea></label><label>新私钥<textarea name="secret" required autocomplete="off"></textarea></label><button>验证并更新</button></form></section>
 <section><div class="row"><h2>已部署节点</h2><button id="refresh" class="secondary">刷新</button></div><div id="nodes"></div></section></div>
 </main></body></html>

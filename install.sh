@@ -33,12 +33,12 @@ fi
 case "$mode" in 1|panel) mode=panel;; 2|node) mode=node;; *) echo "请选择 1 或 2"; exit 1;; esac
 
 case "$family" in
-    apt) apt-get update; DEBIAN_FRONTEND=noninteractive apt-get install -y python3 ca-certificates passwd ;;
-    rpm) pm=$(command -v dnf || command -v yum); "$pm" install -y python3 ca-certificates shadow-utils
+    apt) apt-get update; DEBIAN_FRONTEND=noninteractive apt-get install -y python3 openssl curl ca-certificates passwd ;;
+    rpm) pm=$(command -v dnf || command -v yum); "$pm" install -y python3 openssl curl ca-certificates shadow-utils
          if ! python3 -c 'import sys;sys.exit(sys.version_info < (3,8))'; then "$pm" install -y python39; fi ;;
-    apk) apk add --no-cache python3 ca-certificates coreutils ;;
-    pacman) pacman -S --needed --noconfirm python ca-certificates shadow ;;
-    zypper) zypper --non-interactive install python3 ca-certificates shadow
+    apk) apk add --no-cache python3 openssl curl ca-certificates coreutils ;;
+    pacman) pacman -S --needed --noconfirm python openssl curl ca-certificates shadow ;;
+    zypper) zypper --non-interactive install python3 openssl curl ca-certificates shadow
             if ! python3 -c 'import sys;sys.exit(sys.version_info < (3,8))'; then zypper --non-interactive install python311; fi ;;
 esac
 python=
@@ -49,13 +49,16 @@ done
 app=/opt/fc-ui
 state=/var/lib/fc-ui
 account=fcxrayd
-if ! id "$account" >/dev/null 2>&1; then
-    if [ "$family" = apk ]; then
-        addgroup -S "$account"; adduser -S -D -H -h "$state" -G "$account" -s /sbin/nologin "$account"
-    else
-        useradd --system --user-group --home-dir "$state" --no-create-home --shell "$(command -v nologin || echo /sbin/nologin)" "$account"
+for service_user in "$account" fcui-acme; do
+    if ! id "$service_user" >/dev/null 2>&1; then
+        if [ "$family" = apk ]; then
+            addgroup -S "$service_user"
+            adduser -S -D -H -h /nonexistent -G "$service_user" -s /sbin/nologin "$service_user"
+        else
+            useradd --system --user-group --home-dir /nonexistent --no-create-home --shell "$(command -v nologin || echo /sbin/nologin)" "$service_user"
+        fi
     fi
-fi
+done
 install -d -m 0755 "$app" /etc/fc-ui /usr/local/bin
 # Existing installations keep their original data (including node IDs and keys).
 legacy=/var/lib/fcxray-deploy
@@ -72,7 +75,7 @@ if [ -f /etc/fcxray-deploy/public-host ] && [ ! -e /etc/fc-ui/public-host ]; the
 fi
 install -d -m 0700 -o "$account" -g "$account" "$state"
 "$python" "$src/app/fetch_core.py" "$app"
-for name in cli.py manager.py catalog.py profiles.py panel.py index.html app.js style.css; do install -m 0644 "$src/app/$name" "$app/$name"; done
+for name in cli.py manager.py catalog.py profiles.py panel.py certificates.py cert_service.py index.html app.js style.css; do install -m 0644 "$src/app/$name" "$app/$name"; done
 install -m 0644 "$src/LICENSE" "$app/LICENSE"
 cat > /usr/local/bin/fc-ui <<EOF
 #!/bin/sh
@@ -80,10 +83,23 @@ exec "$python" -B "$app/cli.py" "\$@"
 EOF
 chmod 0755 /usr/local/bin/fc-ui
 if [ "$init" = systemd ]; then
+    cat >/etc/systemd/system/fc-ui-cert.service <<EOF
+[Unit]
+Description=fc-ui certificate deployment and renewal
+After=network-online.target
+[Service]
+ExecStart=$python -B $app/cert_service.py
+Restart=on-failure
+UMask=0077
+NoNewPrivileges=true
+[Install]
+WantedBy=multi-user.target
+EOF
     cat >/etc/systemd/system/fc-ui.service <<EOF
 [Unit]
 Description=fc-ui node manager
-After=network-online.target
+Wants=fc-ui-cert.service
+After=network-online.target fc-ui-cert.service
 Wants=network-online.target
 [Service]
 ExecStart=$python -B $app/cli.py daemon
@@ -104,9 +120,23 @@ EOF
     if systemctl is-active --quiet fcxray-deploy || systemctl is-enabled --quiet fcxray-deploy 2>/dev/null; then
         systemctl disable --now fcxray-deploy
     fi
-    systemctl enable fc-ui
+    systemctl enable fc-ui-cert fc-ui
+    systemctl restart fc-ui-cert
     systemctl restart fc-ui
 else
+    cat >/etc/init.d/fc-ui-cert <<EOF
+#!/sbin/openrc-run
+description="fc-ui certificate deployment and renewal"
+supervisor="supervise-daemon"
+command="$python"
+command_args="-B $app/cert_service.py"
+respawn_delay=3
+depend() { need net; }
+EOF
+    chmod 0755 /etc/init.d/fc-ui-cert
+    rc-update add fc-ui-cert default
+    if rc-service fc-ui-cert status >/dev/null 2>&1; then rc-service fc-ui-cert stop; fi
+    rc-service fc-ui-cert start
     cat >/etc/init.d/fc-ui <<EOF
 #!/sbin/openrc-run
 description="fc-ui node manager"
